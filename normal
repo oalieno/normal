@@ -1,0 +1,231 @@
+#!/usr/bin/env python3
+import os
+import json
+import string
+import secrets
+from docopt import docopt
+from Crypto.Cipher import AES
+from Crypto.Hash import SHA256
+from base64 import b64encode, b64decode
+from prettytable import PrettyTable
+from getpass import getpass
+
+__doc__ = """
+Usage:
+  ./normal.py add <value> [-f FILE] [-gl VALUE]
+  ./normal.py list [-df FILE]
+  ./normal.py query <value> [-i VALUE] [-df FILE]
+  ./normal.py delete <value> [-i VALUE] [-f FILE]
+  ./normal.py generate [-l VALUE]
+  
+Options:
+  -h --help                Show this screen
+  -f FILE --file=FILE      Specify password file [default: {}]
+  -d --decrypt             Decrypt secret detail [default: False]
+  -g --generate            Generate password [default: False]
+  -i VALUE --index VALUE   Specify entry index [default: -1]
+  -l VALUE --length VALUE  Password length [default: 16]
+""".format(os.path.expanduser('~/.normal'))
+
+BLOCK_SIZE = 16
+
+def green(text):
+    return '\033[92m' + text + '\033[0m'
+
+def yellow(text):
+    return '\033[93m' + text + '\033[0m'
+
+def red(text):
+    return '\033[91m' + text + '\033[0m'
+
+def error(text):
+    print(red('[error] - {}'.format(text)))
+    exit(0)
+
+def colorize(name, text, check):
+    if check and type(text) is bytes:
+        text = text.decode()
+    if name in ['name', 'url']:
+        if not text:
+            return yellow('EMPTY')
+        else:
+            return text
+    else:
+        if not check:
+            return red('WRONG KEY')
+        elif not text:
+            return yellow('EMPTY')
+        else:
+            return green(text)
+
+def pad(x):
+    L = -len(x) % BLOCK_SIZE
+    if L == 0: L = 16
+    return x + bytes([L] * L)
+
+def unpad(x):
+    if 0 < x[-1] <= 16:
+        return x[:-x[-1]]
+    else:
+        return b''
+
+def encrypt(key, data):
+    if type(data) is str: data = data.encode()
+    iv = os.urandom(16)
+    aes = AES.new(key, AES.MODE_CBC, iv)
+    return iv + aes.encrypt(pad(data))
+
+def encode(data):
+    return b64encode(data).decode()
+
+def decrypt(key, data):
+    iv, data = data[:16], data[16:]
+    aes = AES.new(key, AES.MODE_CBC, iv)
+    return unpad(aes.decrypt(data))
+
+def decode(data):
+    return b64decode(data)
+
+def getKey():
+    password = getpass('enter secret key: ')
+    return SHA256.new(password.encode()).digest()[:16]
+
+def getData(filename):
+    if os.path.exists(filename):
+        return json.loads(open(filename).read())
+    else:
+        return {}
+
+def add(filename, name, gen, n):
+    data = getData(filename)
+    key = getKey()
+
+    gp = getpass
+    if gen:
+        password = generate(n)
+        gp = lambda prefix: print(prefix + green(password)) or password
+
+    data.setdefault(name, []).append({
+        'url': input('url: '),
+        'username': encode(encrypt(key, input('username: '))),
+        'password': encode(encrypt(key, gp('password: '))),
+        'check': encode(encrypt(key, 'check'))
+    })
+    open(filename, 'w').write(json.dumps(data))
+
+def queryAll(filename, unlock):
+    data = getData(filename)
+    
+    if len(data) is 0:
+        error('no password exists')
+
+    if unlock:
+        key = getKey()
+
+    t = PrettyTable(['name', 'url'] + ((unlock or []) and ['username', 'password']))
+    for name, items in data.items():
+        for item in items:
+            check = False
+            if unlock:
+                check = decrypt(key, decode(item['check'])) == b'check'
+                username = decrypt(key, decode(item['username']))
+                password = decrypt(key, decode(item['password']))
+            t.add_row([
+                colorize('name', name, check),
+                colorize('url', item['url'], check),
+            ] + ((unlock or []) and [
+                colorize('username', username, check),
+                colorize('password', password, check)
+            ]))
+    print(t)
+
+
+def query(filename, name, index, unlock):
+    data = getData(filename)
+
+    items = data.get(name) 
+
+    if not items:
+        error('items not found')
+    
+    if index >= len(items):
+        error('index out of bound')
+
+    if index != -1:
+        items = [items[index]]
+    
+    if unlock:
+        key = getKey()
+
+    t = PrettyTable(['name', 'url'] + ((unlock or []) and ['username', 'password']))
+    for item in items:
+        check = False
+        if unlock:
+            check = decrypt(key, decode(item['check'])) == b'check'
+            username = decrypt(key, decode(item['username']))
+            password = decrypt(key, decode(item['password']))
+        t.add_row([
+            colorize('name', name, check),
+            colorize('url', item['url'], check),
+        ] + ((unlock or []) and [
+            colorize('username', username, check),
+            colorize('password', password, check)
+        ]))
+    print(t)
+
+def delete(filename, name, index):
+    data = getData(filename)
+
+    confirm = input('Are you sure ? (y/n) ')
+
+    if confirm != 'y':
+        return
+
+    items = data.get(name)
+
+    if not items:
+        error('items not found')
+
+    if index >= len(items):
+        error('index out of range')
+
+    if index != -1:
+        items = [items[index]]
+
+    for item in items:
+        data[name].remove(item)
+        if len(data[name]) == 0:
+            data.pop(name)
+
+    open(filename, 'w').write(json.dumps(data))
+
+def generate(n):
+    return ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(n))
+
+if __name__ == "__main__":
+    try:
+        arguments = docopt(__doc__)
+        filename = arguments['--file']
+
+        if arguments['add']:
+            value = arguments['<value>']
+            gen = arguments['--generate']
+            n = int(arguments['--length'])
+            add(filename, value, gen, n)
+        elif arguments['list']:
+            unlock = arguments['--decrypt']
+            queryAll(filename, unlock)
+        elif arguments['query']:
+            index = int(arguments['--index'])
+            unlock = arguments['--decrypt']
+            value = arguments['<value>']
+            query(filename, value, index, unlock)
+        elif arguments['delete']:
+            index = int(arguments['--index'])
+            value = arguments['<value>']
+            delete(filename, value, index)
+        elif arguments['generate']:
+            n = int(arguments['--length'])
+            print(green(generate(n)))
+    except KeyboardInterrupt:
+        exit(0)
