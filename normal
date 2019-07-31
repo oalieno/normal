@@ -7,7 +7,6 @@ from docopt import docopt
 from Crypto.Cipher import AES
 from Crypto.Hash import SHA256
 from base64 import b64encode, b64decode
-from prettytable import PrettyTable
 from getpass import getpass
 
 __doc__ = """
@@ -28,6 +27,34 @@ Options:
 """.format(os.path.expanduser('~/.normal'))
 
 BLOCK_SIZE = 16
+
+class PrettyTable:
+    def __init__(self, colnames):
+        self.rows = [colnames]
+    def add_row(self, row):
+        assert(len(row) == len(self.rows[0]))
+        self.rows.append(row)
+    def _line(self, head, stone, body, tail):
+        return head + stone.join([body * (m + 2) for m in self.maxs]) + tail + '\n'
+    def _len(self, word):
+        count = 0
+        if '\x1b' in word:
+            count -= 11
+        for c in word:
+            if c in string.printable:
+                count += 1
+            else:
+                count += 2
+        return count
+    def __str__(self):
+        self.maxs = [max([self._len(row[i]) for row in self.rows]) for i in range(len(self.rows[0]))]
+        output = self._line('┌', '┬', '─', '┐')
+        content = []
+        for row in self.rows:
+            content.append('│' + '│'.join([f' {cell}{" " * (self.maxs[i] - self._len(cell))} ' for i, cell in enumerate(row)]) + '│\n')
+        output += self._line('├', '┼', '─', '┤').join(content)
+        output += self._line('└', '┴', '─', '┘')
+        return output
 
 def green(text):
     return '\033[92m' + text + '\033[0m'
@@ -123,7 +150,7 @@ def queryAll(filename, unlock):
         key = getKey()
 
     t = PrettyTable(['name', 'url'] + ((unlock or []) and ['username', 'password']))
-    for name, items in data.items():
+    for name, items in sorted(data.items()):
         for item in items:
             check = False
             if unlock:
